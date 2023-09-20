@@ -1,0 +1,44 @@
+version: '3'
+services:
+  termometer-simulator:
+    build:
+      context: ./devices/termometer
+      dockerfile: Dockerfile
+    container_name: termometer-simulator
+    restart: always
+    depends_on:
+      - rabbitmq
+      - cassandra
+    links:
+      - rabbitmq
+    environment:
+      RABBITMQ_HOST: rabbitmq
+
+  rabbitmq:
+    image: "rabbitmq:management"
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"  # Port do RabbitMQ
+      - "15672:15672"  # Port do RabbitMQ Management (interfejs webowy)
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+
+  cassandra:
+    image: "cassandra:latest"
+    container_name: cassandra
+    ports:
+      - "9042:9042"  # Port do Cassandra
+      - "9160:9160"  # Port do Cassandra Thrift
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    environment:
+      - CASSANDRA_CLUSTER_NAME=MyCluster
+      - CASSANDRA_DC=DC1
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+
+volumes:
+  rabbitmq_data:
+  cassandra_data:
