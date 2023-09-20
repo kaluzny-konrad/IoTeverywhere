@@ -13,10 +13,17 @@ class MockCPUTemperature:
         return round(random.uniform(10.0, 30.0), 2)
 
 def create_or_open_file(filename):
+    data_folder = "data"  # Nazwa folderu
+
+    # Sprawdź, czy folder "data" istnieje, jeśli nie, utwórz go
+    if not os.path.exists(data_folder):
+        os.makedirs(data_folder)
+
     if not os.path.isfile(filename):
         # Jeśli plik nie istnieje, to go tworzymy
         with open(filename, "w") as log:
             log.write("Timestamp,Temperature\n")
+            print(f"Zapisano plik: {filename}")
     return filename
 
 try:

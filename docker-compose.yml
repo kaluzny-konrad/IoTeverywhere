@@ -13,6 +13,23 @@ services:
       - rabbitmq
     environment:
       RABBITMQ_HOST: rabbitmq
+    volumes:
+      - termometer-data:/app/data  # Zarejestrowany wolumen dla termometer-simulator
+
+  distributor-app:
+    build:
+      context: ./distributorApp
+    container_name: distributor-app
+    restart: always
+    depends_on:
+      - cassandra
+      - rabbitmq
+      - termometer-simulator  # Dodajemy zależność od termometer-simulator
+    environment:
+      CASSANDRA_HOSTS: cassandra  # Adres hosta bazy danych Cassandra
+      CASSANDRA_KEYSPACE: devices  # Nazwa przestrzeni kluczy bazy danych Cassandra
+      RABBITMQ_URL: amqp://rabbitmq:5672/  # URL RabbitMQ
+      QUEUE: devices  # Nazwa kolejki RabbitMQ
 
   rabbitmq:
     image: "rabbitmq:management"
@@ -42,3 +59,4 @@ services:
 volumes:
   rabbitmq_data:
   cassandra_data:
+  termometer-data:  # Zarejestrowany wolumen dla termometer-simulator

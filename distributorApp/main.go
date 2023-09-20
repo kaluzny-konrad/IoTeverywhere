@@ -1,51 +1,81 @@
 package main
 
 import (
-    "log"
-    "os"
-    "path/filepath"
-    "encoding/csv"
-    "time"
-    "strconv"
-    "io"
+	"log"
+	"os"
+	"path/filepath"
+	"encoding/csv"
+	"time"
+	"strconv"
+	"io"
+	"fmt"
+
+	"github.com/gocql/gocql"
+	"github.com/streadway/amqp"
 )
 
 type TemperatureRecord struct {
-    Timestamp  time.Time
-    Temperature float64
+	Timestamp   time.Time
+	Temperature float64
 }
 
 func main() {
-    dataFolder := "../devices/termometer/data"  // Ścieżka do folderu z danymi
+	dataFolder := "../devices/termometer/data" // Ścieżka do folderu z danymi
 
-    for {
-        // Pobierz listę plików CSV z folderu
-        files, err := filepath.Glob(filepath.Join(dataFolder, "*.csv"))
-        if err != nil {
-            log.Printf("Błąd podczas pobierania listy plików CSV: %s", err)
-            time.Sleep(1 * time.Second)
-            continue
-        }
+	// Połącz się z bazą danych Cassandra
+	cassandraHosts := os.Getenv("CASSANDRA_HOSTS")
+	cassandraKeyspace := os.Getenv("CASSANDRA_KEYSPACE")
+	cluster := gocql.NewCluster(cassandraHosts)
+	cluster.Keyspace = cassandraKeyspace
+	session, err := cluster.CreateSession()
+	if err != nil {
+		log.Fatal("Błąd podczas łączenia z bazą danych Cassandra:", err)
+	}
+	defer session.Close()
 
-        for _, filename := range files {
-            // Pobierz datę modyfikacji pliku
-            fileInfo, err := os.Stat(filename)
-            if err != nil {
-                log.Printf("Błąd podczas pobierania informacji o pliku: %s", err)
-                continue
-            }
+	// Połącz się z RabbitMQ
+	rabbitMQURL := os.Getenv("RABBITMQ_URL")
+	queue := os.Getenv("QUEUE")
+	conn, err := amqp.Dial(rabbitMQURL)
+	if err != nil {
+		log.Fatal("Błąd podczas łączenia z RabbitMQ:", err)
+	}
+	defer conn.Close()
 
-            // Sprawdź, czy plik jest starszy niż 1 sekunda
-            if time.Since(fileInfo.ModTime()) < 1*time.Second {
-                continue
-            }
+	ch, err := conn.Channel()
+	if err != nil {
+		log.Fatal("Błąd podczas tworzenia kanału RabbitMQ:", err)
+	}
+	defer ch.Close()
 
-            // Otwórz plik CSV do odczytu
-            csvFile, err := os.Open(filename)
-            if err != nil {
-                log.Printf("Błąd podczas otwierania pliku CSV: %s", err)
-                continue
-            }
+	for {
+		// Pobierz listę plików CSV z folderu
+		files, err := filepath.Glob(filepath.Join(dataFolder, "temperature_*.csv"))
+		if err != nil {
+			log.Printf("Błąd podczas pobierania listy plików CSV: %s", err)
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+		for _, filename := range files {
+			// Pobierz datę modyfikacji pliku
+			fileInfo, err := os.Stat(filename)
+			if err != nil {
+				log.Printf("Błąd podczas pobierania informacji o pliku: %s", err)
+				continue
+			}
+
+			// Sprawdź, czy plik jest starszy niż 1 sekunda
+			if time.Since(fileInfo.ModTime()) < 1*time.Second {
+				continue
+			}
+
+			// Otwórz plik CSV do odczytu
+			csvFile, err := os.Open(filename)
+			if err != nil {
+				log.Printf("Błąd podczas otwierania pliku CSV: %s", err)
+				continue
+			}
 
 			// Parsuj plik CSV
 			var records []TemperatureRecord
@@ -86,27 +116,36 @@ func main() {
 				records = append(records, recordToInsert)
 			}
 
-            // Po przeczytaniu usuń plik
-            csvFile.Close()
-            if err := os.Remove(filename); err != nil {
-                log.Printf("Błąd podczas usuwania pliku: %s", err)
-            }
+			// Po przeczytaniu usuń plik
+			csvFile.Close()
+			if err := os.Remove(filename); err != nil {
+				log.Printf("Błąd podczas usuwania pliku: %s", err)
+			}
 
-            // Zapisz dane do pliku saved_data.csv
-            savedDataFile, err := os.OpenFile("saved_data.csv", os.O_CREATE|os.O_APPEND|os.O_WRONLY, os.ModePerm)
-            if err != nil {
-                log.Printf("Błąd podczas otwierania pliku saved_data.csv: %s", err)
-                continue
-            }
-            savedDataWriter := csv.NewWriter(savedDataFile)
-            for _, record := range records {
-                savedDataWriter.Write([]string{record.Timestamp.Format("2006-01-02 15:04:05"), strconv.FormatFloat(record.Temperature, 'f', -1, 64)})
-            }
-            savedDataWriter.Flush()
-            savedDataFile.Close()
-        }
+			for _, record := range records {
+				// Zapisz rekord do bazy danych Cassandra
+				if err := session.Query("INSERT INTO temperature (timestamp, temperature) VALUES (?, ?)", record.Timestamp, record.Temperature).Exec(); err != nil {
+					log.Printf("Błąd podczas zapisywania do Cassandra: %s", err)
+					continue
+				}
 
-        // Oczekuj na kolejne sprawdzenie plików
-        time.Sleep(1 * time.Second)
-    }
+				// Wysyłanie rekordu na RabbitMQ
+				err := ch.Publish(
+					"",     // Exchange
+					queue,  // Routing Key
+					false,  // Mandatory
+					false,  // Immediate
+					amqp.Publishing{
+						ContentType: "text/plain",
+						Body:        []byte(fmt.Sprintf("Nowy rekord: %+v", record)),
+					})
+				if err != nil {
+					log.Printf("Błąd podczas wysyłania na RabbitMQ: %s", err)
+				}
+			}
+		}
+
+		// Oczekuj na kolejne sprawdzenie plików
+		time.Sleep(1 * time.Second)
+	}
 }
